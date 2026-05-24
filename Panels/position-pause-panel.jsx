@@ -39,21 +39,56 @@
       normal: config.normalColor || [0.22, 0.22, 0.24],
       hover: config.hoverColor || [0.28, 0.28, 0.31],
       active: config.activeColor || [0.18, 0.18, 0.2],
+      disabled: config.disabledColor || [0.14, 0.14, 0.16],
       text: config.textColor || [0.93, 0.93, 0.95],
+      disabledText: config.disabledTextColor || [0.45, 0.45, 0.48],
     };
+    button.showIndicator = !!config.showIndicator;
+    button.indicatorColor = config.indicatorColor || [0.42, 0.92, 0.76];
 
     button.onDraw = function () {
       var g = this.graphics;
       var w = this.size.width;
       var h = this.size.height;
-      var bgColor = this.colors[this.state] || this.colors.normal;
-      var textPen = g.newPen(g.PenType.SOLID_COLOR, this.colors.text, 1);
+      var bgColor = this.enabled
+        ? this.colors[this.state] || this.colors.normal
+        : this.colors.disabled;
+      var textColor = this.enabled
+        ? this.colors.text
+        : this.colors.disabledText;
+      var textPen = g.newPen(g.PenType.SOLID_COLOR, textColor, 1);
       var bgBrush = g.newBrush(g.BrushType.SOLID_COLOR, bgColor);
       var textSize = g.measureString(this.text);
-      var textX = Math.round((w - textSize.width) / 2);
+      var indicatorDiameter = this.showIndicator
+        ? Math.max(8, Math.round(h * 0.18))
+        : 0;
+      var indicatorGap = this.showIndicator
+        ? Math.max(6, Math.round(h * 0.1))
+        : 0;
+      var contentWidth = textSize.width + indicatorDiameter + indicatorGap;
+      var startX = Math.round((w - contentWidth) / 2);
+      var textX = startX + indicatorDiameter + indicatorGap;
       var textY = Math.round((h - textSize.height) / 2);
 
       drawStableRoundedRect(g, 0, 0, w, h, this.cornerRadius, bgBrush);
+
+      if (this.showIndicator) {
+        var indicatorBrush = g.newBrush(
+          g.BrushType.SOLID_COLOR,
+          this.indicatorColor,
+        );
+        var indicatorX = startX;
+        var indicatorY = Math.round((h - indicatorDiameter) / 2);
+        g.newPath();
+        g.ellipsePath(
+          indicatorX,
+          indicatorY,
+          indicatorDiameter,
+          indicatorDiameter,
+        );
+        g.fillPath(indicatorBrush);
+      }
+
       g.drawString(this.text, textPen, textX, textY);
     };
 
@@ -93,6 +128,32 @@
     });
 
     return button;
+  }
+
+  function setCustomButtonEnabled(button, enabled) {
+    button.enabled = enabled;
+    button.state = "normal";
+    button.notify("onDraw");
+  }
+
+  function setCustomButtonStyle(button, config) {
+    button.colors.normal = config.normalColor;
+    button.colors.hover = config.hoverColor;
+    button.colors.active = config.activeColor;
+    if (config.disabledColor) {
+      button.colors.disabled = config.disabledColor;
+    }
+    if (config.textColor) {
+      button.colors.text = config.textColor;
+    }
+    if (config.disabledTextColor) {
+      button.colors.disabledText = config.disabledTextColor;
+    }
+    button.showIndicator = !!config.showIndicator;
+    if (config.indicatorColor) {
+      button.indicatorColor = config.indicatorColor;
+    }
+    button.notify("onDraw");
   }
 
   function addControlSurface(parent) {
@@ -144,6 +205,10 @@
   }
 
   function appendLog(logText, message) {
+    if (!logText) {
+      return;
+    }
+
     var state = getState();
     var logLines = state.logLines;
     logLines.push("[" + timestampForLog() + "] " + message);
@@ -412,6 +477,23 @@
     return "name:" + (comp ? comp.name : "unknown");
   }
 
+  function hasStableId(identifier) {
+    return typeof identifier === "string" && identifier.indexOf("id:") === 0;
+  }
+
+  function compReferencesMatch(record, comp) {
+    if (!record || !comp) {
+      return false;
+    }
+
+    var currentCompId = getCompIdentifier(comp);
+    if (hasStableId(record.compId) && hasStableId(currentCompId)) {
+      return record.compId === currentCompId;
+    }
+
+    return record.compId === currentCompId || record.compName === comp.name;
+  }
+
   function getLayerIdentifier(layer) {
     try {
       if (layer && layer.id !== undefined && layer.id !== null) {
@@ -481,6 +563,10 @@
           return layer;
         }
       }
+
+      if (hasStableId(layerReference.layerId)) {
+        return null;
+      }
     }
 
     if (
@@ -524,6 +610,10 @@
 
     if (left.layerId && right.layerId && left.layerId === right.layerId) {
       return true;
+    }
+
+    if (hasStableId(left.layerId) && hasStableId(right.layerId)) {
+      return false;
     }
 
     if (
@@ -581,7 +671,7 @@
       }
 
       var record = pausedLayers[key];
-      if (record.compId !== compId && record.compName !== comp.name) {
+      if (!compReferencesMatch(record, comp)) {
         continue;
       }
 
@@ -1316,6 +1406,7 @@
           relativeTimes.push(channelKey.relativeTime);
         }
         keyMap[mapKey][snapshotChannel.axisIndex] = channelKey.value;
+        keyMap[mapKey]["key_" + snapshotChannel.axisIndex] = channelKey;
       }
     }
 
@@ -1338,6 +1429,87 @@
         access.layer.startTime + relativeTime,
         vectorToValue(mergedValue, access.axisCount),
       );
+    }
+
+    for (timeIndex = 0; timeIndex < relativeTimes.length; timeIndex++) {
+      relativeTime = relativeTimes[timeIndex];
+      entry = keyMap[String(relativeTime)];
+      var combinedKeyIndex = timeIndex + 1;
+      var firstAxisKey = null;
+      var inEaseArray = [];
+      var outEaseArray = [];
+
+      for (axisIndex = 0; axisIndex < access.axisCount; axisIndex++) {
+        var axisKey = entry["key_" + axisIndex];
+        if (!axisKey) {
+          axisKey = firstAxisKey;
+        }
+        if (!axisKey) {
+          for (
+            var fallbackAxis = 0;
+            fallbackAxis < access.axisCount;
+            fallbackAxis++
+          ) {
+            axisKey = entry["key_" + fallbackAxis];
+            if (axisKey) {
+              break;
+            }
+          }
+        }
+        if (!axisKey) {
+          continue;
+        }
+
+        if (!firstAxisKey) {
+          firstAxisKey = axisKey;
+        }
+
+        var inEase = (axisKey.inTemporalEase && axisKey.inTemporalEase[0]) || {
+          speed: 0,
+          influence: 33.333,
+        };
+        var outEase =
+          (axisKey.outTemporalEase && axisKey.outTemporalEase[0]) || {
+            speed: 0,
+            influence: 33.333,
+          };
+        inEaseArray.push(new KeyframeEase(inEase.speed, inEase.influence));
+        outEaseArray.push(new KeyframeEase(outEase.speed, outEase.influence));
+      }
+
+      if (!firstAxisKey) {
+        continue;
+      }
+
+      tryCall(function () {
+        access.combinedProperty.setInterpolationTypeAtKey(
+          combinedKeyIndex,
+          firstAxisKey.inInterpolationType,
+          firstAxisKey.outInterpolationType,
+        );
+      });
+
+      tryCall(function () {
+        access.combinedProperty.setTemporalEaseAtKey(
+          combinedKeyIndex,
+          inEaseArray,
+          outEaseArray,
+        );
+      });
+
+      tryCall(function () {
+        access.combinedProperty.setTemporalContinuousAtKey(
+          combinedKeyIndex,
+          firstAxisKey.temporalContinuous,
+        );
+      });
+
+      tryCall(function () {
+        access.combinedProperty.setTemporalAutoBezierAtKey(
+          combinedKeyIndex,
+          firstAxisKey.temporalAutoBezier,
+        );
+      });
     }
 
     if (relativeTimes.length < 1) {
@@ -1688,10 +1860,37 @@
   function getPauseSelectionProfile(comp, logText) {
     var layers = getSelectedLayers(comp);
     var targetKinds = getSelectedTargetKinds(comp);
+    var pausedEntries = collectPausedSelectionEntries(comp, layers, logText);
+    var allPaused =
+      comp && layers.length > 0 && targetKinds.length > 0
+        ? pausedEntries.length === layers.length
+        : false;
+    var anyPaused = false;
+
+    if (allPaused || pausedEntries.length > 0) {
+      for (var entryIndex = 0; entryIndex < pausedEntries.length; entryIndex++) {
+        var record = pausedEntries[entryIndex].record;
+        var entryHasAllTargets = true;
+
+        for (var targetIndex = 0; targetIndex < targetKinds.length; targetIndex++) {
+          if (record && record.targets[targetKinds[targetIndex]]) {
+            anyPaused = true;
+          } else {
+            entryHasAllTargets = false;
+          }
+        }
+
+        if (!entryHasAllTargets) {
+          allPaused = false;
+        }
+      }
+    }
+
     return {
       layers: layers,
       targetKinds: targetKinds,
-      allPaused: areSelectedTargetsPaused(comp, layers, targetKinds, logText),
+      allPaused: allPaused,
+      anyPaused: anyPaused,
     };
   }
 
@@ -1701,13 +1900,18 @@
       return null;
     }
 
+    var canMatchByName = !hasStableId(compId);
     for (var i = 1; i <= project.numItems; i++) {
       var item = project.item(i);
       if (!(item instanceof CompItem)) {
         continue;
       }
 
-      if (getCompIdentifier(item) === compId || item.name === compName) {
+      if (getCompIdentifier(item) === compId) {
+        return item;
+      }
+
+      if (canMatchByName && item.name === compName) {
         return item;
       }
     }
@@ -1831,17 +2035,40 @@
       if (!clipboardComp) {
         state.clipboard = null;
       } else {
-        var clipboardLayer = resolveLayerByIdOrName(
-          clipboardComp,
-          state.clipboard.sourceLayerId,
-          state.clipboard.sourceLayerName,
-          state.clipboard.sourceLayerIndex,
-        );
-        if (!clipboardLayer) {
+        var clipboardEntries = getClipboardEntries(state.clipboard);
+        var resolvedEntries = [];
+        for (
+          var clipboardIndex = 0;
+          clipboardIndex < clipboardEntries.length;
+          clipboardIndex++
+        ) {
+          var clipboardEntry = clipboardEntries[clipboardIndex];
+          var clipboardLayer = resolveLayerByIdOrName(
+            clipboardComp,
+            clipboardEntry.sourceLayerId,
+            clipboardEntry.sourceLayerName,
+            clipboardEntry.sourceLayerIndex,
+          );
+          if (!clipboardLayer) {
+            continue;
+          }
+
+          clipboardEntry.sourceLayerName = clipboardLayer.name;
+          clipboardEntry.sourceLayerIndex = clipboardLayer.index;
+          resolvedEntries.push(clipboardEntry);
+        }
+
+        if (resolvedEntries.length < 1) {
           state.clipboard = null;
         } else {
-          state.clipboard.sourceLayerName = clipboardLayer.name;
-          state.clipboard.sourceLayerIndex = clipboardLayer.index;
+          state.clipboard.entries = resolvedEntries;
+          state.clipboard.sourceLayerId = resolvedEntries[0].sourceLayerId;
+          state.clipboard.sourceLayerName = resolvedEntries[0].sourceLayerName;
+          state.clipboard.sourceLayerIndex =
+            resolvedEntries[0].sourceLayerIndex;
+          state.clipboard.targets = resolvedEntries[0].targets;
+          state.clipboard.targetKinds =
+            collectClipboardTargetKinds(resolvedEntries);
         }
       }
     }
@@ -1869,6 +2096,18 @@
     return [];
   }
 
+  function getClipboardEntries(clipboard) {
+    if (!clipboard) {
+      return [];
+    }
+
+    if (clipboard.entries && clipboard.entries.length > 0) {
+      return clipboard.entries;
+    }
+
+    return [clipboard];
+  }
+
   function getClipboardEntry(clipboard, targetKind) {
     if (!clipboard) {
       return null;
@@ -1886,6 +2125,76 @@
     }
 
     return null;
+  }
+
+  function getClipboardTargetEntry(entry, targetKind) {
+    if (!entry) {
+      return null;
+    }
+
+    if (entry.targets && entry.targets[targetKind]) {
+      return entry.targets[targetKind];
+    }
+
+    return getClipboardEntry(entry, targetKind);
+  }
+
+  function buildClipboardSourceEntry(comp, sourceLayer, targetKinds) {
+    var sourceRecord = getPausedRecord(comp, sourceLayer);
+    var clipboardTargets = {};
+    var copiedTargetKinds = [];
+
+    for (var targetIndex = 0; targetIndex < targetKinds.length; targetIndex++) {
+      var targetKind = targetKinds[targetIndex];
+      var sourceAccess = getTargetAccess(sourceLayer, targetKind);
+      if (!ensureSupportedAccess(sourceAccess)) {
+        continue;
+      }
+
+      var sourceSnapshot =
+        sourceRecord && sourceRecord.targets[targetKind]
+          ? sourceRecord.targets[targetKind]
+          : null;
+      if (!sourceSnapshot) {
+        sourceSnapshot = snapshotAccess(sourceAccess, comp.time);
+      } else {
+        var sourceOffset = calculateOffsetForTarget(
+          getCurrentTargetValue(sourceAccess),
+          sourceSnapshot.heldValue,
+          sourceAccess.axisCount,
+        );
+        sourceSnapshot = makeOffsetSnapshot(sourceSnapshot, sourceOffset);
+      }
+
+      clipboardTargets[targetKind] = {
+        sourceValueAtCopy: cloneArray(sourceSnapshot.heldValue),
+        snapshot: sourceSnapshot,
+      };
+      copiedTargetKinds.push(targetKind);
+    }
+
+    if (copiedTargetKinds.length < 1) {
+      return null;
+    }
+
+    return {
+      sourceLayerId: getLayerIdentifier(sourceLayer),
+      sourceLayerName: sourceLayer.name,
+      sourceLayerIndex: sourceLayer.index,
+      targetKinds: copiedTargetKinds,
+      targets: clipboardTargets,
+    };
+  }
+
+  function collectClipboardTargetKinds(entries) {
+    var targetKinds = [];
+    for (var entryIndex = 0; entryIndex < entries.length; entryIndex++) {
+      var entryKinds = getClipboardTargetKinds(entries[entryIndex]);
+      for (var kindIndex = 0; kindIndex < entryKinds.length; kindIndex++) {
+        pushUnique(targetKinds, entryKinds[kindIndex]);
+      }
+    }
+    return targetKinds;
   }
 
   function buildStatusLines() {
@@ -1913,11 +2222,16 @@
     }
 
     if (state.clipboard) {
+      var clipboardEntries = getClipboardEntries(state.clipboard);
+      var sourceLabel =
+        clipboardEntries.length > 1
+          ? clipboardEntries.length + " layers"
+          : state.clipboard.sourceLayerName;
       lines.push(
         "[Clipboard] " +
           formatTargetKinds(getClipboardTargetKinds(state.clipboard)) +
           " copied from " +
-          state.clipboard.sourceLayerName,
+          sourceLabel,
       );
     }
 
@@ -1932,35 +2246,117 @@
     statusText.text = buildStatusLines().join("\n");
   }
 
-  function buildPauseButtonLabel(comp) {
-    var profile = getPauseSelectionProfile(comp);
-    if (profile.targetKinds.length < 1) {
-      return "Pause Position";
+  function hasAnyPausedTargets() {
+    var pausedLayers = getState().pausedLayers;
+
+    for (var key in pausedLayers) {
+      if (!pausedLayers.hasOwnProperty(key)) {
+        continue;
+      }
+
+      if (getPausedTargetKinds(pausedLayers[key]).length > 0) {
+        return true;
+      }
     }
 
-    var action = profile.allPaused ? "Resume " : "Pause ";
-    return action + formatTargetKinds(profile.targetKinds);
+    return false;
+  }
+
+  function buildPauseButtonLabel(comp) {
+    var profile = getPauseSelectionProfile(comp);
+    return profile.anyPaused ? "Resume" : "Pause";
   }
 
   function buildCopyButtonLabel(comp) {
     var clipboard = getState().clipboard;
     var clipboardTargetKinds = getClipboardTargetKinds(clipboard);
     if (clipboardTargetKinds.length > 0) {
-      return "Paste " + formatTargetKinds(clipboardTargetKinds) + " Keys";
+      return "Paste";
     }
 
-    var targetKinds = getSelectedTargetKinds(comp);
-    if (targetKinds.length < 1) {
-      return "Copy Position Keys";
-    }
+    return "Copy";
+  }
 
-    return "Copy " + formatTargetKinds(targetKinds) + " Keys";
+  function setLogVisibility(logContainer, logToggleButton, isVisible) {
+    logContainer.visible = isVisible;
+    logContainer.minimumSize = isVisible ? [220, 110] : [0, 0];
+    logContainer.maximumSize = isVisible ? [10000, 10000] : [0, 0];
+    logContainer.preferredSize = isVisible ? [220, 180] : [0, 0];
+    logToggleButton.text = isVisible ? "v Log" : "> Log";
+    logToggleButton.notify("onDraw");
   }
 
   function refreshUI(pauseResumeButton, copyPasteButton, logText) {
     reconcileState();
-    pauseResumeButton.text = buildPauseButtonLabel(getActiveComp());
+    var linkedButtons = pauseResumeButton._linkedButtons || {};
+    var comp = getActiveComp();
+    var profile = getPauseSelectionProfile(comp);
+    var isPaused = profile.anyPaused;
+    var hasOpenPause = hasAnyPausedTargets();
+    var hasClipboard = getClipboardTargetKinds(getState().clipboard).length > 0;
+
+    pauseResumeButton.text = buildPauseButtonLabel(comp);
     copyPasteButton.text = buildCopyButtonLabel(getActiveComp());
+
+    if (isPaused) {
+      setCustomButtonStyle(pauseResumeButton, {
+        normalColor: [0.16, 0.4, 0.82],
+        hoverColor: [0.22, 0.48, 0.9],
+        activeColor: [0.12, 0.32, 0.7],
+        showIndicator: true,
+        indicatorColor: [0.48, 0.98, 0.82],
+      });
+    } else {
+      setCustomButtonStyle(pauseResumeButton, {
+        normalColor: [0.22, 0.22, 0.24],
+        hoverColor: [0.28, 0.28, 0.31],
+        activeColor: [0.18, 0.18, 0.2],
+        showIndicator: false,
+      });
+    }
+
+    if (linkedButtons.exportControl) {
+      setCustomButtonEnabled(linkedButtons.exportControl, !isPaused && !hasClipboard);
+    }
+
+    setCustomButtonEnabled(copyPasteButton, !isPaused);
+    if (hasClipboard) {
+      setCustomButtonStyle(copyPasteButton, {
+        normalColor: [0.16, 0.4, 0.82],
+        hoverColor: [0.22, 0.48, 0.9],
+        activeColor: [0.12, 0.32, 0.7],
+        showIndicator: true,
+        indicatorColor: [0.48, 0.98, 0.82],
+      });
+    } else {
+      setCustomButtonStyle(copyPasteButton, {
+        normalColor: [0.24, 0.21, 0.28],
+        hoverColor: [0.3, 0.25, 0.35],
+        activeColor: [0.18, 0.16, 0.22],
+        showIndicator: false,
+      });
+    }
+
+    if (linkedButtons.pause) {
+      setCustomButtonEnabled(linkedButtons.pause, !hasClipboard);
+    }
+
+    if (linkedButtons.refresh) {
+      if (hasOpenPause) {
+        setCustomButtonStyle(linkedButtons.refresh, {
+          normalColor: [0.82, 0.18, 0.16],
+          hoverColor: [0.92, 0.24, 0.2],
+          activeColor: [0.68, 0.13, 0.12],
+        });
+      } else {
+        setCustomButtonStyle(linkedButtons.refresh, {
+          normalColor: [0.22, 0.22, 0.24],
+          hoverColor: [0.28, 0.28, 0.31],
+          activeColor: [0.18, 0.18, 0.2],
+        });
+      }
+    }
+
     renderLog(logText);
   }
 
@@ -2208,7 +2604,7 @@
       return;
     }
 
-    if (profile.allPaused) {
+    if (profile.anyPaused) {
       app.beginUndoGroup("Resume Transform Keys");
       try {
         resumeSelectedTargets(comp, profile, logText);
@@ -2352,73 +2748,43 @@
     }
 
     if (!state.clipboard || forceCopy) {
-      if (selectedLayers.length !== 1) {
-        appendLog(logText, "Copy aborted: exactly one layer must be selected.");
+      var clipboardEntries = [];
+      for (var sourceIndex = 0; sourceIndex < selectedLayers.length; sourceIndex++) {
+        var sourceLayer = selectedLayers[sourceIndex];
+        var sourceEntry = buildClipboardSourceEntry(
+          comp,
+          sourceLayer,
+          targetKinds,
+        );
+        if (sourceEntry) {
+          clipboardEntries.push(sourceEntry);
+        }
+      }
+
+      if (clipboardEntries.length < 1) {
+        appendLog(logText, "Copy aborted: no eligible targets found.");
         refreshUI(pauseResumeButton, copyPasteButton, logText);
         return;
       }
 
-      var sourceLayer = selectedLayers[0];
-      var sourceRecord = getPausedRecord(comp, sourceLayer);
-      var clipboardTargets = {};
-      var copiedTargetKinds = [];
-
-      for (
-        var targetIndex = 0;
-        targetIndex < targetKinds.length;
-        targetIndex++
-      ) {
-        var targetKind = targetKinds[targetIndex];
-        var sourceAccess = getTargetAccess(sourceLayer, targetKind);
-        if (!ensureSupportedAccess(sourceAccess)) {
-          continue;
-        }
-
-        var sourceSnapshot =
-          sourceRecord && sourceRecord.targets[targetKind]
-            ? sourceRecord.targets[targetKind]
-            : null;
-        if (!sourceSnapshot) {
-          if (countAccessKeys(sourceAccess) < 1) {
-            continue;
-          }
-          sourceSnapshot = snapshotAccess(sourceAccess, comp.time);
-        } else {
-          var sourceOffset = calculateOffsetForTarget(
-            getCurrentTargetValue(sourceAccess),
-            sourceSnapshot.heldValue,
-            sourceAccess.axisCount,
-          );
-          sourceSnapshot = makeOffsetSnapshot(sourceSnapshot, sourceOffset);
-        }
-
-        clipboardTargets[targetKind] = {
-          sourceValueAtCopy: cloneArray(sourceSnapshot.heldValue),
-          snapshot: sourceSnapshot,
-        };
-        copiedTargetKinds.push(targetKind);
-      }
-
-      if (copiedTargetKinds.length < 1) {
-        appendLog(logText, "Copy aborted: no eligible keyed targets found.");
-        refreshUI(pauseResumeButton, copyPasteButton, logText);
-        return;
-      }
-
+      var copiedTargetKinds = collectClipboardTargetKinds(clipboardEntries);
+      var firstEntry = clipboardEntries[0];
       state.clipboard = {
         compId: getCompIdentifier(comp),
         compName: comp.name,
-        sourceLayerId: getLayerIdentifier(sourceLayer),
-        sourceLayerName: sourceLayer.name,
-        sourceLayerIndex: sourceLayer.index,
+        sourceLayerId: firstEntry.sourceLayerId,
+        sourceLayerName: firstEntry.sourceLayerName,
+        sourceLayerIndex: firstEntry.sourceLayerIndex,
         targetKinds: copiedTargetKinds,
-        targets: clipboardTargets,
+        targets: firstEntry.targets,
+        entries: clipboardEntries,
       };
 
       appendLog(
         logText,
         "Copy stored: " +
-          formatLayerForLog(sourceLayer) +
+          clipboardEntries.length +
+          " source layer(s)" +
           ", targets=" +
           formatTargetKinds(copiedTargetKinds),
       );
@@ -2428,21 +2794,30 @@
 
     app.beginUndoGroup("Paste Transform Keys");
     try {
+      var sourceEntries = getClipboardEntries(state.clipboard);
       for (var i = 0; i < selectedLayers.length; i++) {
         var targetLayer = selectedLayers[i];
-        if (getLayerIdentifier(targetLayer) === state.clipboard.sourceLayerId) {
+        var sourceEntry =
+          sourceEntries.length === selectedLayers.length
+            ? sourceEntries[i]
+            : sourceEntries[0];
+        if (!sourceEntry) {
           continue;
         }
 
-        var clipboardTargetKinds = getClipboardTargetKinds(state.clipboard);
+        if (getLayerIdentifier(targetLayer) === sourceEntry.sourceLayerId) {
+          continue;
+        }
+
+        var clipboardTargetKinds = getClipboardTargetKinds(sourceEntry);
         for (
           var clipboardIndex = 0;
           clipboardIndex < clipboardTargetKinds.length;
           clipboardIndex++
         ) {
           var clipboardKind = clipboardTargetKinds[clipboardIndex];
-          var clipboardEntry = getClipboardEntry(
-            state.clipboard,
+          var clipboardEntry = getClipboardTargetEntry(
+            sourceEntry,
             clipboardKind,
           );
           if (!clipboardEntry) {
@@ -2467,6 +2842,7 @@
     }
     app.endUndoGroup();
 
+    clearClipboard();
     refreshUI(pauseResumeButton, copyPasteButton, logText);
   }
 
@@ -2481,25 +2857,21 @@
       minButtonHeight * 3 + gap * 2,
       height - padding * 2,
     );
-    var topHeight = Math.max(minButtonHeight, Math.round(usableHeight * 0.38));
     var middleHeight = Math.max(
       minButtonHeight,
-      Math.round(usableHeight * 0.34),
+      Math.round(usableHeight * 0.4),
     );
-    var bottomHeight = usableHeight - topHeight - middleHeight - gap * 2;
+    var remainingHeight = usableHeight - middleHeight - gap * 2;
+    var topHeight = Math.max(minButtonHeight, Math.floor(remainingHeight / 2));
+    var bottomHeight = remainingHeight - topHeight;
 
     if (bottomHeight < minButtonHeight) {
       bottomHeight = minButtonHeight;
-      middleHeight = Math.max(
-        minButtonHeight,
-        usableHeight - topHeight - bottomHeight - gap * 2,
-      );
+      topHeight = minButtonHeight;
+      middleHeight = usableHeight - topHeight - bottomHeight - gap * 2;
     }
 
-    bottomHeight = usableHeight - topHeight - middleHeight - gap * 2;
-
     var leftWidth = Math.max(70, Math.round((usableWidth - gap) * 0.5));
-    var rightWidth = usableWidth - leftWidth - gap;
     var x = padding;
     var y = padding;
 
@@ -2531,10 +2903,36 @@
     var cluster = panel.add("group");
     cluster.alignment = ["fill", "fill"];
     cluster.minimumSize = [220, 110];
-    cluster.maximumSize.height = 140;
     cluster.layout = null;
 
-    var logText = panel.add("edittext", undefined, "", {
+    var logToggleButton = addCustomButton(
+      panel,
+      "> Log",
+      function () {
+        var nextVisible = !logContainer.visible;
+        setLogVisibility(logContainer, logToggleButton, nextVisible);
+        panel.layout.layout(true);
+        panel._layoutControls();
+      },
+      {
+        normalColor: [0.16, 0.16, 0.18],
+        hoverColor: [0.22, 0.22, 0.25],
+        activeColor: [0.12, 0.12, 0.14],
+      },
+    );
+    logToggleButton.alignment = ["fill", "top"];
+    logToggleButton.minimumSize.height = 24;
+    logToggleButton.visible = false;
+    logToggleButton.minimumSize = [0, 0];
+    logToggleButton.maximumSize = [0, 0];
+    logToggleButton.preferredSize = [0, 0];
+
+    var logContainer = panel.add("group");
+    logContainer.orientation = "column";
+    logContainer.alignChildren = ["fill", "fill"];
+    logContainer.alignment = ["fill", "fill"];
+
+    var logText = logContainer.add("edittext", undefined, "", {
       multiline: true,
       readonly: true,
       scrolling: true,
@@ -2596,6 +2994,16 @@
       copy: copyPasteButton,
       refresh: refreshButton,
     };
+
+    pauseResumeButton._linkedButtons = {
+      pause: pauseResumeButton,
+      exportControl: exportButton,
+      refresh: refreshButton,
+      logToggle: logToggleButton,
+      logContainer: logContainer,
+    };
+
+    setLogVisibility(logContainer, logToggleButton, false);
 
     panel.onShow = function () {
       appendLog(logText, "Panel shown.");

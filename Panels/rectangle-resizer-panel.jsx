@@ -608,30 +608,20 @@
       minButtonHeight * 3 + gap * 2,
       height - padding * 2,
     );
-    var topHeight = Math.max(minButtonHeight, Math.round(usableHeight * 0.3));
     var middleHeight = Math.max(
       minButtonHeight,
       Math.round(usableHeight * 0.4),
     );
-    var bottomHeight = usableHeight - topHeight - middleHeight - gap * 2;
+    var remainingHeight = usableHeight - middleHeight - gap * 2;
+    var topHeight = Math.max(minButtonHeight, Math.floor(remainingHeight / 2));
+    var bottomHeight = remainingHeight - topHeight;
 
     if (bottomHeight < minButtonHeight) {
       bottomHeight = minButtonHeight;
-      middleHeight = Math.max(
-        minButtonHeight,
-        usableHeight - topHeight - bottomHeight - gap * 2,
-      );
+      topHeight = minButtonHeight;
+      middleHeight = usableHeight - topHeight - bottomHeight - gap * 2;
     }
 
-    if (middleHeight < minButtonHeight) {
-      middleHeight = minButtonHeight;
-      topHeight = Math.max(
-        minButtonHeight,
-        usableHeight - middleHeight - bottomHeight - gap * 2,
-      );
-    }
-
-    bottomHeight = usableHeight - topHeight - middleHeight - gap * 2;
     var sideWidth = Math.max(52, Math.round(usableWidth * 0.24));
     var centerWidth = usableWidth - sideWidth * 2 - gap * 2;
 
